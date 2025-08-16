@@ -24,6 +24,7 @@ global_max_abs = 0
 # Contador para evitar contracciones frecuentes
 contraction_count = 0
 max_contractions = 3  # Límite de contracciones para mantener consistencia
+
 async def plot_greeks_table(
         df,
         today_ddt,
@@ -136,7 +137,7 @@ async def plot_greeks_table(
                 max_abs = max(abs(pivot_table.min().min()), abs(pivot_table.max().max()))
                 if max_abs == 0:
                     max_abs = 1e-6
-                        
+                
                 global global_max_abs, contraction_count
                 global_max_abs = max(global_max_abs, max_abs)
                 if global_max_abs > max_abs * 1.5 and contraction_count < max_contractions:
@@ -145,7 +146,7 @@ async def plot_greeks_table(
                 if global_max_abs == 0:
                         global_max_abs = 1e-6
                 max_abs = global_max_abs
-                    
+
                 # Formatear etiquetas de expiración
                 expiration_labels = [d.strftime('%b %d') for d in expirations]
                 
@@ -177,6 +178,85 @@ async def plot_greeks_table(
                 ax.set_ylabel("Strike Price")
                 spot_idx = len(strikes) - np.searchsorted(strikes[::-1], spot_price, side='left') - 1
                 ax.axhline(y=spot_idx, color='white', linestyle='--', linewidth=1, label=f'Spot Price: {spot_price:.2f}')
+
+
+                # Calcular valores agregados por strike para encontrar máximo, mínimo y transición
+                agg_by_strike = df_filtered.groupby('strike_price')[metric].sum()
+                max_positive_strike = agg_by_strike.idxmax()
+                max_negative_strike = agg_by_strike.idxmin()
+
+                # Encontrar el índice en strikes para el máximo y mínimo
+                if not pd.isna(max_positive_strike):
+                    max_positive_idx = len(strikes) - np.searchsorted(strikes[::-1], max_positive_strike, side='left') - 1
+                    ax.axhline(
+                        y=max_positive_idx,
+                        color="yellow",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label=f"Max Positive {name}: {max_positive_strike:.2f}",
+                        xmin=0.5,  # Desde el centro hacia la derecha
+                        xmax=1.0
+                    )
+                if not pd.isna(max_negative_strike):
+                    max_negative_idx = len(strikes) - np.searchsorted(strikes[::-1], max_negative_strike, side='left') - 1
+                    ax.axhline(
+                        y=max_negative_idx,
+                        color="purple",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label=f"Max Negative {name}: {max_negative_strike:.2f}",
+                        xmin=0.0,  # Desde el centro hacia la izquierda
+                        xmax=0.5
+                    )
+
+                # Encontrar el punto de transición de positivo a negativo más cercano al spot_price, ignorando outliers
+                signs = np.sign(agg_by_strike.values)
+                runs = []
+                if len(signs) > 0:
+                    current_sign = signs[0]
+                    start = 0
+                    for j in range(1, len(signs)):
+                        if signs[j] != current_sign:
+                            runs.append((current_sign, start, j-1))
+                            current_sign = signs[j]
+                            start = j
+                    runs.append((current_sign, start, len(signs)-1))
+
+                # Encontrar transiciones válidas donde ambas runs tengan longitud >=2
+                zero_strikes = []
+                for r in range(1, len(runs)):
+                    prev_run = runs[r-1]
+                    curr_run = runs[r]
+                    prev_len = prev_run[2] - prev_run[1] + 1
+                    curr_len = curr_run[2] - curr_run[1] + 1
+                    if prev_len >= 2 and curr_len >= 2 and prev_run[0] != curr_run[0] and prev_run[0] != 0 and curr_run[0] != 0:
+                        idx1 = prev_run[2]
+                        idx2 = curr_run[1]
+                        strike1 = agg_by_strike.index[idx1]
+                        value1 = agg_by_strike.iloc[idx1]
+                        strike2 = agg_by_strike.index[idx2]
+                        value2 = agg_by_strike.iloc[idx2]
+                        # Interpolar el zero strike
+                        zero_strike = strike2 - ((strike2 - strike1) * value2 / (value2 - value1))
+                        zero_strikes.append(zero_strike)
+
+                # Encontrar el cambio de signo más cercano al spot_price
+                if zero_strikes:
+                    zero_strikes = np.array(zero_strikes)
+                    closest_idx = np.argmin(np.abs(zero_strikes - spot_price))
+                    zero_strike = zero_strikes[closest_idx]
+                    zero_idx = len(strikes) - np.searchsorted(strikes[::-1], zero_strike, side='left') - 1
+                    ax.axhline(
+                        y=zero_idx,
+                        color="cyan",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label=f"{name} Flip: {zero_strike:.2f}"
+                    )
+
+
+
+
                 ax.legend(loc='upper right')
 
                 # Añadir barra de color
@@ -327,6 +407,9 @@ async def plot_greeks_histogram(
                 plt.grid(True, color="lightgray", linewidth=0.4, alpha=0.5)
 
                 if "Absolute" in value:
+                    metric_data = df_agg[f"total_{name.lower()}"]
+                    max_positive_strike = metric_data.idxmax()
+                    max_negative_strike = metric_data.idxmin()
                     plt.bar(
                         df_agg.index, # para que la barra esté centrada, siendo el width=4, la mitad de 4 es 2
                         df_agg[f"total_{name.lower()}"],
@@ -336,7 +419,79 @@ async def plot_greeks_histogram(
                         alpha=0.9,
                         color=colors["total"],
                     )
+                    if not pd.isna(max_positive_strike):
+                        plt.axvline(
+                            x=max_positive_strike,
+                            color="lime",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"Max Positive {name}: {max_positive_strike:.2f}",
+                            ymin=0.0,  # Desde el eje x hacia arriba
+                            ymax=1.0
+                        )
+                    if not pd.isna(max_negative_strike):
+                        plt.axvline(
+                            x=max_negative_strike,
+                            color="red",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"Max Negative {name}: {max_negative_strike:.2f}",
+                            ymin=0.0,  # Desde el eje x hacia abajo
+                            ymax=1.0
+                        )
+                    
+                    # Encontrar el punto de transición de positivo a negativo más cercano al spot_price, ignorando outliers
+                    metric_data = df_agg[f"total_{name.lower()}"]
+                    signs = np.sign(metric_data.values)
+
+                    # Encontrar runs de signos iguales
+                    runs = []
+                    if len(signs) > 0:
+                        current_sign = signs[0]
+                        start = 0
+                        for j in range(1, len(signs)):
+                            if signs[j] != current_sign:
+                                runs.append((current_sign, start, j-1))
+                                current_sign = signs[j]
+                                start = j
+                        runs.append((current_sign, start, len(signs)-1))
+
+                    # Encontrar transiciones válidas donde ambas runs tengan longitud >=2
+                    zero_strikes = []
+                    for r in range(1, len(runs)):
+                        prev_run = runs[r-1]
+                        curr_run = runs[r]
+                        prev_len = prev_run[2] - prev_run[1] + 1
+                        curr_len = curr_run[2] - curr_run[1] + 1
+                        if prev_len >= 2 and curr_len >= 2 and prev_run[0] != curr_run[0] and prev_run[0] != 0 and curr_run[0] != 0:
+                            idx1 = prev_run[2]
+                            idx2 = curr_run[1]
+                            strike1 = metric_data.index[idx1]
+                            value1 = metric_data.iloc[idx1]
+                            strike2 = metric_data.index[idx2]
+                            value2 = metric_data.iloc[idx2]
+                            # Interpolar el zero strike
+                            zero_strike = strike2 - ((strike2 - strike1) * value2 / (value2 - value1))
+                            zero_strikes.append(zero_strike)
+
+                    # Encontrar el cambio de signo más cercano al spot_price
+                    if zero_strikes:
+                        zero_strikes = np.array(zero_strikes)
+                        closest_idx = np.argmin(np.abs(zero_strikes - spot_price))
+                        zero_strike = zero_strikes[closest_idx]
+                        
+                        plt.axvline(
+                            x=zero_strike,
+                            color="yellow",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"{name} Flip: {zero_strike:.2f}"
+                        )
+                    
                 elif "Calls/Puts" in value:
+                    metric_data = df_agg[f"total_{name.lower()}"]
+                    max_positive_strike = metric_data.idxmax()
+                    max_negative_strike = metric_data.idxmin()
                     plt.bar(
                         df_agg.index,
                         df_agg[f"call_{name[:1].lower()}ex"] / scale,
@@ -355,6 +510,74 @@ async def plot_greeks_histogram(
                         alpha=0.9,
                         color=colors["put"],
                     )
+                    if not pd.isna(max_positive_strike):
+                        plt.axvline(
+                            x=max_positive_strike,
+                            color="lime",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"Max Positive {name}: {max_positive_strike:.2f}",
+                            ymin=0.0,  # Desde el eje x hacia arriba
+                            ymax=1.0
+                        )
+                    if not pd.isna(max_negative_strike):
+                        plt.axvline(
+                            x=max_negative_strike,
+                            color="red",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"Max Negative {name}: {max_negative_strike:.2f}",
+                            ymin=0.0,  # Desde el eje x hacia abajo
+                            ymax=1.0
+                        )
+                    
+                    # Encontrar el punto de transición de positivo a negativo más cercano al spot_price, ignorando outliers
+                    metric_data = df_agg[f"total_{name.lower()}"]
+                    signs = np.sign(metric_data.values)
+
+                    # Encontrar runs de signos iguales
+                    runs = []
+                    if len(signs) > 0:
+                        current_sign = signs[0]
+                        start = 0
+                        for j in range(1, len(signs)):
+                            if signs[j] != current_sign:
+                                runs.append((current_sign, start, j-1))
+                                current_sign = signs[j]
+                                start = j
+                        runs.append((current_sign, start, len(signs)-1))
+
+                    # Encontrar transiciones válidas donde ambas runs tengan longitud >=2
+                    zero_strikes = []
+                    for r in range(1, len(runs)):
+                        prev_run = runs[r-1]
+                        curr_run = runs[r]
+                        prev_len = prev_run[2] - prev_run[1] + 1
+                        curr_len = curr_run[2] - curr_run[1] + 1
+                        if prev_len >= 2 and curr_len >= 2 and prev_run[0] != curr_run[0] and prev_run[0] != 0 and curr_run[0] != 0:
+                            idx1 = prev_run[2]
+                            idx2 = curr_run[1]
+                            strike1 = metric_data.index[idx1]
+                            value1 = metric_data.iloc[idx1]
+                            strike2 = metric_data.index[idx2]
+                            value2 = metric_data.iloc[idx2]
+                            # Interpolar el zero strike
+                            zero_strike = strike2 - ((strike2 - strike1) * value2 / (value2 - value1))
+                            zero_strikes.append(zero_strike)
+
+                    # Encontrar el cambio de signo más cercano al spot_price
+                    if zero_strikes:
+                        zero_strikes = np.array(zero_strikes)
+                        closest_idx = np.argmin(np.abs(zero_strikes - spot_price))
+                        zero_strike = zero_strikes[closest_idx]
+                        
+                        plt.axvline(
+                            x=zero_strike,
+                            color="yellow",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label=f"{name} Flip: {zero_strike:.2f}"
+                        )
                 elif value == "Implied Volatility Average":
                     plt.plot(
                         df_agg.index,
@@ -951,7 +1174,7 @@ async def get_options_data(ticker, expir, greek_filter):
     session = Session(username, password)
     #fin = time.perf_counter()
     #print(f"El inicio de sesión tardó {fin - inicio:.4f} segundos.")
-    print("Logged in tasty", __name__)
+
     tz = "America/New_York"
 
     ticker = ticker.replace("^", "").replace(" ", '').upper()
@@ -968,7 +1191,7 @@ async def get_options_data(ticker, expir, greek_filter):
         tickerList.append("SPX")
     
     tickerList.append(get_SOFR_ticker())
-    print("got sofr ticker", __name__)
+
     #inicio = time.perf_counter()
     
     _, tickers_quotes = await tasty_data(session, equities_ticker=tickerList)
@@ -1007,6 +1230,8 @@ async def get_options_data(ticker, expir, greek_filter):
 
         spot_price = precio_spot_final
 
+    #fin = time.perf_counter()
+    #print(f"La descarga del spot price y SOFR tardó {fin - inicio:.4f} segundos. SOFR: ")
 
 
     expir = expir.replace(" ", '').lower()            
@@ -1107,7 +1332,7 @@ async def get_options_data(ticker, expir, greek_filter):
         option_data = format_data(gr_list, today_ddt)
         #fin = time.perf_counter()
         #print(f"El formateo de datos tardó {fin - inicio:.4f} segundos.")
-    print("Got options data", __name__)
+  
     #inicio = time.perf_counter()
     exposure_data = (await calc_exposures(
         option_data,
@@ -1120,7 +1345,6 @@ async def get_options_data(ticker, expir, greek_filter):
         today_ddt_string,
         SOFR_yield
     ))
-    print("Got calcs", __name__)
     #fin = time.perf_counter()
     #print(f"La función cálculo de exposiciones tardó {fin - inicio:.4f} segundos.")
     exposure_data = exposure_data + (expir,ticker,lower_strike, upper_strike, greek_filter)
