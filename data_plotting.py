@@ -1209,20 +1209,21 @@ async def get_options_data(ticker, expir, greek_filter):
                 tickerList.append("SPXW")
             if ticker == "SPXW":
                 tickerList.append("SPX")
-        
-    modify_ticker_list(ticker, tickerList)
-    
-    tickerList.append(get_SOFR_ticker())
+                    
+    if ticker == "SPX":
+        tickerList.append("SPXW")
+    if ticker == "SPXW":
+        tickerList.append("SPX")
 
+    tickerList.append(get_SOFR_ticker())
     #inicio = time.perf_counter()
     
     _, tickers_quotes = await tasty_data(session, equities_ticker=tickerList)
-
+    modify_ticker_list(ticker, tickerList)
+    
     if '/' in ticker:
         tickerList = [ticker]
-    else:
-        tickerList = tickerList[:-1]
-
+        
     for quote in tickers_quotes:
         if quote.get("symbol") == get_SOFR_ticker():
             SOFRrate = float(quote.get("last"))
@@ -1378,6 +1379,7 @@ async def get_options_data(ticker, expir, greek_filter):
     
     return [histogram_filename, table_filename]
     
+
 
 
 
